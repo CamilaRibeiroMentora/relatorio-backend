@@ -4,15 +4,11 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type'] }));
 app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 
-async function chamarClaude(prompt, maxTokens) {
+async function chamarClaude(mensagens, maxTokens) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -23,10 +19,9 @@ async function chamarClaude(prompt, maxTokens) {
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }]
+      messages: mensagens
     })
   });
-
   const data = await response.json();
   if (data.error) throw new Error(data.error.message);
   let text = data.content?.map(i => i.text || '').join('') || '';
@@ -38,27 +33,57 @@ app.post('/gerar', async (req, res) => {
     let { transcricao } = req.body;
     if (!transcricao) return res.status(400).json({ erro: 'Transcrição obrigatória' });
 
-    // Limitar tamanho para evitar erros — pegar os primeiros 8000 caracteres
-    if (transcricao.length > 8000) {
-      transcricao = transcricao.substring(0, 8000);
+    // Limitar a 6000 caracteres
+    if (transcricao.length > 6000) {
+      transcricao = transcricao.substring(0, 6000);
     }
 
-    // ETAPA 1 — Resumir transcrição
-    const resumo = await chamarClaude(
-      `Você é especialista em psicoterapia e constelação sistêmica. Leia esta transcrição de sessão terapêutica e extraia um resumo clínico detalhado incluindo: estado emocional, temas abordados, falas marcantes, insights, avanços, dificuldades, intervenções, combinados, e padrões sistêmicos familiares.\n\nTRANSCRIÇÃO:\n${transcricao}`,
-      1200
-    );
+    // ETAPA 1 — Resumir
+    const resumoMensagens = [
+      {
+        role: 'user',
+        content: 'Você é especialista em psicoterapia e constelação sistêmica. Leia esta transcrição e extraia um resumo clínico detalhado: estado emocional, temas, insights, avanços, dificuldades, intervenções, combinados e padrões sistêmicos familiares.'
+      },
+      {
+        role: 'assistant',
+        content: 'Entendido. Pode enviar a transcrição.'
+      },
+      {
+        role: 'user',
+        content: transcricao
+      }
+    ];
 
-    // ETAPA 2 — Gerar JSON
-    const jsonPrompt = `Com base neste resumo de sessão terapêutica, gere um JSON. Retorne APENAS JSON válido, sem markdown, sem texto extra.\n\nRESUMO:\n${resumo}\n\nEstrutura:\n{"clinico":{"estado_emocional":"texto","humor_geral":"positivo","temas_principais":["t1","t2"],"conteudo_sessao":"texto","insights_avancos":["i1"],"dificuldades_resistencias":["d1"],"intervencoes_utilizadas":["i1"],"tarefas_casa":["t1"],"proximos_passos":["p1"],"observacoes_terapeuta":"texto"},"sistemico":{"padroes_identificados":["p1"],"lealdades_invisiveis":["l1"],"campos_familiares":"texto","movimentos_necessarios":["m1"],"hipotese_sistemica":"texto"},"mensagem_cliente":{"saudacao":"texto","resumo_sessao":"texto","reconhecimento":"texto","pratica_semana":{"titulo":"texto","descricao":"texto"},"acoes":["a1","a2"],"mensagem_encorajamento":"texto","assinatura":"Até a nossa próxima sessão! 💛"}}`;
+    const resumo = await chamarClaude(resumoMensagens, 1200);
 
-    const resultado = await chamarClaude(jsonPrompt, 1800);
-    const dados = JSON.parse(resultado);
+    // ETAPA 2 — Gerar JSON estruturado
+    const jsonMensagens = [
+      {
+        role: 'user',
+        content: `Com base neste resumo de sessão terapêutica, gere um JSON. Retorne APENAS o JSON, sem texto antes ou depois, sem markdown.\n\nRESUMO: ${resumo}\n\nEstrutura exata:\n{"clinico":{"estado_emocional":"","humor_geral":"positivo","temas_principais":[],"conteudo_sessao":"","insights_avancos":[],"dificuldades_resistencias":[],"intervencoes_utilizadas":[],"tarefas_casa":[],"proximos_passos":[],"observacoes_terapeuta":""},"sistemico":{"padroes_identificados":[],"lealdades_invisiveis":[],"campos_familiares":"","movimentos_necessarios":[],"hipotese_sistemica":""},"mensagem_cliente":{"saudacao":"","resumo_sessao":"","reconhecimento":"","pratica_semana":{"titulo":"","descricao":""},"acoes":[],"mensagem_encorajamento":"","assinatura":"Até a nossa próxima sessão! 💛"}}`
+      }
+    ];
+
+    const resultado = await chamarClaude(jsonMensagens, 1800);
+
+    let dados;
+    try {
+      dados = JSON.parse(resultado);
+    } catch(parseErr) {
+      // Tentar extrair JSON do texto
+      const match = resultado.match(/\{[\s\S]*\}/);
+      if (match) {
+        dados = JSON.parse(match[0]);
+      } else {
+        throw new Error('Resposta inválida da IA');
+      }
+    }
+
     res.json({ ok: true, dados });
 
   } catch (err) {
     console.error('Erro:', err.message);
-    res.status(500).json({ erro: err.message || 'Erro ao gerar relatório' });
+    res.status(500).json({ erro: err.message });
   }
 });
 
